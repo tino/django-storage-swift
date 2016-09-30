@@ -32,6 +32,14 @@ def setting(name, default='__not_set__'):
         raise ImproperlyConfigured('The {} setting is required'.format(name))
 
 
+def ensure_setup(func):
+    def inner(self, *args):
+        if self.storage_url is None:
+            self._setup()
+        return func(self, *args)
+    return inner
+
+
 @deconstructible
 class SwiftStorage(Storage):
     api_auth_url = setting('SWIFT_AUTH_URL')
@@ -73,6 +81,22 @@ class SwiftStorage(Storage):
         self.last_headers_name = None
         self.last_headers_value = None
 
+        # Initialize empty, meaning that this instance is not setup yet. See
+        # `_setup` below
+        self.storage_url = None
+
+    def _setup(self):
+        """
+        Separate setup method for `storage_url` and `token` initialization.
+
+        By separating this out of `__init__`, it becomes possible to use
+        SwiftStorage as the non-default storage, without calling the storage on
+        each django bootstrap. (Which is very annoying in development, as
+        every dev-server reboot first then needs to connect to storage storage.)
+
+        Each method that uses the swiftclient directly should be decorated with
+        `ensure_setup`.
+        """
         self.os_options = {
             'tenant_id': self.tenant_id,
             'tenant_name': self.tenant_name,
@@ -153,6 +177,7 @@ class SwiftStorage(Storage):
 
     token = property(get_token, set_token)
 
+    @ensure_setup
     def _open(self, name, mode='rb'):
         if self.name_prefix:
             name = self.name_prefix + name
@@ -167,6 +192,7 @@ class SwiftStorage(Storage):
         buf.mode = mode
         return File(buf)
 
+    @ensure_setup
     def _save(self, name, content):
         if self.name_prefix:
             name = self.name_prefix + name
@@ -186,6 +212,7 @@ class SwiftStorage(Storage):
                                content_type=content_type)
         return name
 
+    @ensure_setup
     def get_headers(self, name):
         """
         Optimization : only fetch headers once when several calls are made
@@ -208,6 +235,7 @@ class SwiftStorage(Storage):
             self.last_headers_name = name
         return self.last_headers_value
 
+    @ensure_setup
     def exists(self, name):
         try:
             self.get_headers(name)
@@ -215,6 +243,7 @@ class SwiftStorage(Storage):
             return False
         return True
 
+    @ensure_setup
     def delete(self, name):
         try:
             swiftclient.delete_object(self.storage_url,
@@ -229,14 +258,15 @@ class SwiftStorage(Storage):
         s = name.strip().replace(' ', '_')
         return re.sub(r'(?u)[^-_\w./]', '', s)
 
-    def get_available_name(self, name):
+    def get_available_name(self, name, max_length=None):
         """
         Returns a filename that's free on the target storage system, and
         available for new content to be written to.
         """
 
         if not self.auto_overwrite:
-            name = super(SwiftStorage, self).get_available_name(name)
+            name = super(SwiftStorage, self).get_available_name(
+                name, max_length)
 
         return name
 
@@ -273,6 +303,7 @@ class SwiftStorage(Storage):
     def isdir(self, name):
         return '.' not in name
 
+    @ensure_setup
     def listdir(self, path):
         container = swiftclient.get_container(self.storage_url, self.token,
                                               self.container_name)
@@ -293,6 +324,7 @@ class SwiftStorage(Storage):
 
         return dirs, files
 
+    @ensure_setup
     def makedirs(self, dirs):
         swiftclient.put_object(self.storage_url,
                                token=self.token,
@@ -300,6 +332,7 @@ class SwiftStorage(Storage):
                                name='%s/.' % (self.name_prefix + dirs),
                                contents='')
 
+    @ensure_setup
     def rmtree(self, abs_path):
         container = swiftclient.get_container(self.storage_url, self.token,
                                               self.container_name)
@@ -317,7 +350,7 @@ class StaticSwiftStorage(SwiftStorage):
     name_prefix = setting('SWIFT_STATIC_NAME_PREFIX', '')
     override_base_url = setting('SWIFT_STATIC_BASE_URL', '')
 
-    def get_available_name(self, name):
+    def get_available_name(self, name, max_length=None):
         """
         When running collectstatic we don't want to return an available name,
         we want to return the same name because if the file exists we want to
