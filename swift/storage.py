@@ -94,8 +94,8 @@ class SwiftStorage(Storage):
         each django bootstrap. (Which is very annoying in development, as
         every dev-server reboot first then needs to connect to storage storage.)
 
-        Each method that uses the swiftclient directly should be decorated with
-        `ensure_setup`.
+        Each method that uses any of `token`, `storage_url` or `base_url` should
+        be decorated with `ensure_setup`.
         """
         self.os_options = {
             'tenant_id': self.tenant_id,
@@ -280,6 +280,7 @@ class SwiftStorage(Storage):
     def url(self, name):
         return self._path(name)
 
+    @ensure_setup
     def _path(self, name):
         if self.name_prefix:
             name = self.name_prefix + name
